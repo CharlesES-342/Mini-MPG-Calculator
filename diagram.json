@@ -11,6 +11,13 @@
       "top": 204.74,
       "left": 77.03,
       "attrs": { "i2cAddress": "0x3c" }
+    },
+    {
+      "type": "wokwi-ds1307",
+      "id": "rtc1",
+      "top": 100,
+      "left": -120,
+      "attrs": { "initTime": "now" }
     }
   ],
   "connections": [
@@ -24,7 +31,11 @@
     [ "enc1:VCC", "esp:3V3", "red", [ "v0" ] ],
     [ "enc1:CLK", "esp:16", "green", [ "v0" ] ],
     [ "enc1:DT", "esp:17", "yellow", [ "v0" ] ],
-    [ "enc1:SW", "esp:19", "gray", [ "v0" ] ]
+    [ "enc1:SW", "esp:19", "gray", [ "v0" ] ],
+    [ "rtc1:GND", "esp:GND", "black", [ "v0" ] ],
+    [ "rtc1:5V", "esp:3V3", "red", [ "v0" ] ],
+    [ "rtc1:SDA", "esp:21", "blue", [ "v0" ] ],
+    [ "rtc1:SCL", "esp:22", "orange", [ "v0" ] ]
   ],
   "dependencies": {}
 }

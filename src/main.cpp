@@ -2,6 +2,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <RotaryEncoder.h>
+#include <Preferences.h>
+#include <RTClib.h>
 #include "bitmaps.h"
 
 #define SCREEN_WIDTH 128
@@ -9,28 +11,43 @@
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+Preferences preferences;
+RTC_DS1307 rtc; // Use DS1307 class for the Wokwi DS1307 component
+
 // ESP32 Rotary Encoder Pins: CLK -> Pin 16, DT -> Pin 17
 RotaryEncoder encoder(16, 17, RotaryEncoder::LatchMode::FOUR3);
 const int encoderButtonPin = 19;
 
-// State management
+// State management - STATE_SHOW_TIME is set as the default startup state
 enum AppState {
+  STATE_SHOW_TIME,
   STATE_ENTER_MILES,
   STATE_ENTER_LITRES,
   STATE_SHOW_MPG
 };
 
-AppState currentState = STATE_ENTER_MILES;
+AppState currentState = STATE_SHOW_TIME;
 
-float milesDriven = 0.0;
+float lastOdometer = 0.0;     
+float currentOdometer = 0.0;  
+float milesDriven = 0.0;      
 float fuelLiters = 0.0;
 float calculatedMpg = 0.0;
 int lastPos = 0;
 
+// Timer variables for the 5-second time mode delay
+unsigned long timeStateEntryMillis = 0;
+bool timeToDisplayClock = false;
+
 // Forward declarations
 void updateDisplay();
-void bootScreen();
+void loadStoredOdometer();
+void saveStoredOdometer();
+void setupRTC();
 
+/**
+ * @brief Initialises serial communication, display, input pins, persistent storage, and the RTC module.
+ */
 void setup() {
   Serial.begin(115200);
   
@@ -41,13 +58,24 @@ void setup() {
   
   pinMode(encoderButtonPin, INPUT_PULLUP);
 
-  // Run the boot screen once on startup
-  bootScreen();
+  // Initialise the RTC module over I2C
+  setupRTC();
+
+  // Load the last saved odometer baseline from flash memory
+  loadStoredOdometer();
+  currentOdometer = lastOdometer;
+
+  // Initialise the time state timer so it starts counting down immediately on boot
+  timeStateEntryMillis = millis();
+  timeToDisplayClock = false;
   
-  // Load the first operational state screen
+  // Load the first operational state screen (shows the van graphic initially)
   updateDisplay();
 }
 
+/**
+ * @brief Main execution loop handling encoder rotation, button clicks, and screen state logic.
+ */
 void loop() {
   encoder.tick();
   int newPos = encoder.getPosition();
@@ -58,42 +86,65 @@ void loop() {
     lastPos = newPos;
 
     if (currentState == STATE_ENTER_MILES) {
-      milesDriven += change * 1.0; // Steps of 1 mile
-      if (milesDriven < 0) milesDriven = 0;
+      currentOdometer += change * 1.0; 
+      if (currentOdometer < 0) currentOdometer = 0;
     } 
     else if (currentState == STATE_ENTER_LITRES) {
-      fuelLiters += change * 0.1; // Steps of 0.1 Litres
+      fuelLiters += change * 0.1; 
       if (fuelLiters < 0) fuelLiters = 0;
     }
     updateDisplay();
   }
 
-  // Simplified and reliable button click handler for simulation
+  // Handle live clock updates if we are viewing the time state
+  if (currentState == STATE_SHOW_TIME) {
+    if (!timeToDisplayClock && (millis() - timeStateEntryMillis >= 5000)) {
+      timeToDisplayClock = true;
+      updateDisplay();
+    } else if (timeToDisplayClock) {
+      static unsigned long lastClockUpdate = 0;
+      if (millis() - lastClockUpdate >= 1000) {
+        lastClockUpdate = millis();
+        updateDisplay();
+      }
+    }
+  }
+
+  // Simplified and reliable button click handler
   static bool lastBtnState = HIGH;
   bool btnState = digitalRead(encoderButtonPin);
   
   if (btnState == LOW && lastBtnState == HIGH) {
-    // Button pressed transition logic
-    if (currentState == STATE_ENTER_MILES) {
+    if (currentState == STATE_SHOW_TIME) {
+      currentState = STATE_ENTER_MILES;
+      encoder.setPosition(0);
+      lastPos = 0;
+    }
+    else if (currentState == STATE_ENTER_MILES) {
+      milesDriven = currentOdometer - lastOdometer;
+      if (milesDriven < 0) milesDriven = 0; 
+      
       currentState = STATE_ENTER_LITRES;
       encoder.setPosition(0);
       lastPos = 0;
     } 
     else if (currentState == STATE_ENTER_LITRES) {
-      // Calculate UK MPG (1 UK Gallon = 4.54609 Litres)
-      if (fuelLiters > 0) {
+      if (fuelLiters > 0 && milesDriven > 0) {
         float gallonsUK = fuelLiters / 4.54609;
         calculatedMpg = milesDriven / gallonsUK;
       } else {
         calculatedMpg = 0;
       }
+      
+      lastOdometer = currentOdometer;
+      saveStoredOdometer();
+      
       currentState = STATE_SHOW_MPG;
     } 
     else if (currentState == STATE_SHOW_MPG) {
-      // Reset for a new calculation cycle
-      currentState = STATE_ENTER_MILES;
-      milesDriven = 0.0;
-      fuelLiters = 0.0;
+      currentState = STATE_SHOW_TIME;
+      timeStateEntryMillis = millis();
+      timeToDisplayClock = false;
       encoder.setPosition(0);
       lastPos = 0;
     }
@@ -103,45 +154,72 @@ void loop() {
   lastBtnState = btnState;
 }
 
-void bootScreen() {
-  display.clearDisplay();
-  
-  // Draw the Kei-truck bitmap centered (32 pixels wide, positioned at X=48, Y=12)
-  display.drawBitmap(48, 12, kei_truck_bmp, 32, 16, SSD1306_WHITE);
-  
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(14, 38);
-  display.println(F("Kei-Truck MPG Calc"));
-  
-  display.display();
-  delay(2000); // Show for 2 seconds before clearing into setup
+/**
+ * @brief Initialises the RTC module and checks if it's running correctly.
+ */
+void setupRTC() {
+  if (!rtc.begin()) {
+    Serial.println(F("Couldn't find RTC"));
+    while (1);
+  }
 }
 
+/**
+ * @brief Saves the current odometer baseline value into permanent flash memory.
+ */
+void saveStoredOdometer() {
+  preferences.begin("mpg-calc", false);
+  preferences.putFloat("lastOdom", lastOdometer);
+  preferences.end();
+}
+
+/**
+ * @brief Loads the previously saved odometer baseline value from flash memory.
+ */
+void loadStoredOdometer() {
+  preferences.begin("mpg-calc", true); 
+  lastOdometer = preferences.getFloat("lastOdom", 0.0);
+  preferences.end();
+}
+
+/**
+ * @brief Renders the correct UI layout onto the OLED display depending on the active application state.
+ */
 void updateDisplay() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   
-  if (currentState == STATE_ENTER_MILES) {
-    display.setCursor(0, 0);
-    display.println(F("Step 1: Set Miles"));
+  if (currentState == STATE_SHOW_TIME) {
+    if (!timeToDisplayClock) {
+      // Draw the detailed 64x24 campervan bitmap centered during the 5-second startup window
+      // X = (128 - 64) / 2 = 32, Y = (64 - 24) / 2 = 20
+      display.drawBitmap(0, 0, honda_acty_bmp, 128, 64, SSD1306_WHITE);
+    } else {
+      DateTime now = rtc.now();
+      display.setTextSize(3); // Larger text for hours:minutes
+      
+      char timeBuffer[6];
+      sprintf(timeBuffer, "%02d:%02d", now.hour(), now.minute());
+      
+      // Center the 5-character string (width ~90px): (128 - 90) / 2 = 19
+      display.setCursor(19, 22);
+      display.print(timeBuffer);
+    }
+  }
+  else if (currentState == STATE_ENTER_MILES) {
     display.setTextSize(2);
     display.setCursor(0, 25);
-    display.print(milesDriven, 0);
-    display.print(" Miles");
+    display.print(currentOdometer, 0);
+    display.print(" mi");
   } 
   else if (currentState == STATE_ENTER_LITRES) {
-    display.setCursor(0, 0);
-    display.println(F("Step 2: Set Litres"));
     display.setTextSize(2);
     display.setCursor(0, 25);
     display.print(fuelLiters, 1);
     display.print(" L");
   } 
   else if (currentState == STATE_SHOW_MPG) {
-    display.setCursor(0, 0);
-    display.println(F("Result (UK Gallon):"));
     display.setTextSize(2);
     display.setCursor(0, 20);
     display.print(calculatedMpg, 1);
@@ -149,7 +227,7 @@ void updateDisplay() {
     
     display.setTextSize(1);
     display.setCursor(0, 50);
-    display.print(F("Click to restart"));
+    display.print(F("Click for Time"));
   }
   display.display();
 }
