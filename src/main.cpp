@@ -209,25 +209,44 @@ void updateDisplay() {
   }
   else if (currentState == STATE_ENTER_MILES) {
     display.setTextSize(2);
-    display.setCursor(0, 25);
-    display.print(currentOdometer, 0);
-    display.print(" mi");
+    char milesText[16];
+    snprintf(milesText, sizeof(milesText), "%d mi", (int)currentOdometer);
+
+    int16_t textX, textY;
+    uint16_t textWidth, textHeight;
+    display.getTextBounds(milesText, 0, 25, &textX, &textY, &textWidth, &textHeight);
+    display.setCursor((SCREEN_WIDTH - textWidth) / 2, 25);
+    display.print(milesText);
   } 
   else if (currentState == STATE_ENTER_LITRES) {
     display.setTextSize(2);
-    display.setCursor(0, 25);
-    display.print(fuelLiters, 1);
-    display.print(" L");
+    char litresText[16];
+    snprintf(litresText, sizeof(litresText), "%.1f L", fuelLiters);
+
+    int16_t textX, textY;
+    uint16_t textWidth, textHeight;
+    display.getTextBounds(litresText, 0, 25, &textX, &textY, &textWidth, &textHeight);
+    display.setCursor((SCREEN_WIDTH - textWidth) / 2, 25);
+    display.print(litresText);
   } 
   else if (currentState == STATE_SHOW_MPG) {
     display.setTextSize(2);
-    display.setCursor(0, 20);
-    display.print(calculatedMpg, 1);
-    display.print(" MPG");
+    char mpgText[16];
+    snprintf(mpgText, sizeof(mpgText), "%.1f MPG", calculatedMpg);
+
+    int16_t textX, textY;
+    uint16_t textWidth, textHeight;
+    display.getTextBounds(mpgText, 0, 20, &textX, &textY, &textWidth, &textHeight);
+    display.setCursor((SCREEN_WIDTH - textWidth) / 2, 20);
+    display.print(mpgText);
     
     display.setTextSize(1);
-    display.setCursor(0, 50);
-    display.print(F("Click for Time"));
+    const char *prompt = "Click for Time";
+    int16_t promptX, promptY;
+    uint16_t promptWidth, promptHeight;
+    display.getTextBounds(prompt, 0, 0, &promptX, &promptY, &promptWidth, &promptHeight);
+    display.setCursor((SCREEN_WIDTH - promptWidth) / 2, 50);
+    display.print(prompt);
   }
   display.display();
 }
