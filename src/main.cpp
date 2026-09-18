@@ -35,9 +35,9 @@ float fuelLiters = 0.0;
 float calculatedMpg = 0.0;
 int lastPos = 0;
 
-// Timer variables for the 5-second time mode delay
+// Timer variables for the 5-second time mode delay and boot tracking
 unsigned long timeStateEntryMillis = 0;
-bool timeToDisplayClock = false;
+bool hasBooted = false; // Tracks whether the initial boot sequence has completed
 
 // Forward declarations
 void updateDisplay();
@@ -67,7 +67,7 @@ void setup() {
 
   // Initialise the time state timer so it starts counting down immediately on boot
   timeStateEntryMillis = millis();
-  timeToDisplayClock = false;
+  hasBooted = false;
   
   // Load the first operational state screen (shows the van graphic initially)
   updateDisplay();
@@ -98,10 +98,12 @@ void loop() {
 
   // Handle live clock updates if we are viewing the time state
   if (currentState == STATE_SHOW_TIME) {
-    if (!timeToDisplayClock && (millis() - timeStateEntryMillis >= 5000)) {
-      timeToDisplayClock = true;
-      updateDisplay();
-    } else if (timeToDisplayClock) {
+    if (!hasBooted) {
+      if (millis() - timeStateEntryMillis >= 5000) {
+        hasBooted = true; // Mark boot sequence as permanently finished
+        updateDisplay();
+      }
+    } else {
       static unsigned long lastClockUpdate = 0;
       if (millis() - lastClockUpdate >= 1000) {
         lastClockUpdate = millis();
@@ -143,8 +145,7 @@ void loop() {
     } 
     else if (currentState == STATE_SHOW_MPG) {
       currentState = STATE_SHOW_TIME;
-      timeStateEntryMillis = millis();
-      timeToDisplayClock = false;
+      // Do not reset boot timer flags here, keeping hasBooted true so the logo never shows again
       encoder.setPosition(0);
       lastPos = 0;
     }
@@ -191,18 +192,15 @@ void updateDisplay() {
   display.setTextColor(SSD1306_WHITE);
   
   if (currentState == STATE_SHOW_TIME) {
-    if (!timeToDisplayClock) {
-      // Draw the detailed 64x24 campervan bitmap centered during the 5-second startup window
-      // X = (128 - 64) / 2 = 32, Y = (64 - 24) / 2 = 20
+    if (!hasBooted) {
       display.drawBitmap(0, 0, honda_acty_bmp, 128, 64, SSD1306_WHITE);
     } else {
       DateTime now = rtc.now();
-      display.setTextSize(3); // Larger text for hours:minutes
+      display.setTextSize(3); 
       
       char timeBuffer[6];
       sprintf(timeBuffer, "%02d:%02d", now.hour(), now.minute());
       
-      // Center the 5-character string (width ~90px): (128 - 90) / 2 = 19
       display.setCursor(19, 22);
       display.print(timeBuffer);
     }
@@ -248,5 +246,6 @@ void updateDisplay() {
     display.setCursor((SCREEN_WIDTH - promptWidth) / 2, 50);
     display.print(prompt);
   }
+  
   display.display();
 }
